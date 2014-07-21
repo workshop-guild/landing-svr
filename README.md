@@ -1,4 +1,4 @@
-KTS-Landing Server
+Landing Server
 ==================
 
 Requirement
