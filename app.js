@@ -1,3 +1,4 @@
+#!/bin/env node
 var fs = require('fs'),
     express = require('express'),
     http = require('http'),
@@ -8,13 +9,20 @@ var fs = require('fs'),
     moment = require('moment'),
     multiparty = require('multiparty'),
     murmurhash = require('murmurhash'), // Generating user hash for url
+    crypto = require('crypto'),
     SERVER_ENV = require(__dirname + '/env.json');
 
 var app = express();
 
-var port = SERVER_ENV.web_port;
+var ipaddress = process.env.OPENSHIFT_NODEJS_IP || "127.0.0.1";
+var port = process.env.OPENSHIFT_NODEJS_PORT || SERVER_ENV.web_port;
+var data_dir = process.env.OPENSHIFT_DATA_DIR || __dirname + '/views/user';
+
 
 var SERVER_PUBLIC_ADDR = SERVER_ENV.web_url;
+
+var STATUS_OK = 0;
+var STATUS_ERR  = 1;
 
 var sessionMiddleWare = function(req, res, next) {
     var session_id = req.cookies;
@@ -26,16 +34,40 @@ var sessionMiddleWare = function(req, res, next) {
     return next();
 }
 
+function Timestamp()
+{
+    return moment().format("YYYY-MM-DD HH:mm:ss");
+}
+
+function getDataDir()
+{
+    return data_dir + '/';
+}
+
 function getSession(req)
 {
-    if (req.cookies && req.cookies.email) {
-        return {
-            'username' : req.cookies.email,
-            'profile'  : req.cookies.profile,
-            'lastseen' : req.cookies.lastseen
-        };
-    }
+    //if (req.cookies && req.cookies.email) {
+    //    return {
+    //        'username' : req.cookies.email,
+    //        'profile'  : req.cookies.profile,
+    //        'lastseen' : req.cookies.lastseen
+    //    };
+    //}
+    if (req.cookies.isset) return req.cookies;
+        
     return null;
+}
+
+function setSession(res, key, value, bHttpOnly)
+{
+    bHttpOnly = (typeof bHttpOnly === 'undefined' ? true : bHttpOnly);
+    res.cookie('isset', value, { maxAge: 900000, httpOnly: bHttpOnly });  
+    res.cookie(key, value, { maxAge: 900000, httpOnly: bHttpOnly });    
+}
+
+function clearSession(res)
+{
+    res.cookie.isset = null;
 }
 
 mongodb.connect(SERVER_ENV.db_url, function(err, db) {                   
@@ -45,14 +77,21 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
         return;
     }
     
-    var server = http.createServer(app).listen(port, function(err) {
+    var server = http.createServer(app).listen(port,ipaddress, function(err) {
         if (err) return console.log('Error in startin server: ' + err);
-        console.log("HTTP Listening on " + server.address().port);  
-        console.dir(server.address());
+        console.log("[%s]: Node Started and listening %s:%s",
+            Timestamp(),
+            server.address().address,
+            server.address().port);  
     });
     
     // settings
     app.set('trust proxy', true);
+    
+    // ensure db index by location
+    db.collection('players', function (e, collection) {
+      collection.ensureIndex({ _id: 1, location: '2dsphere' }, function() {});
+    });
     
     // express logging middleware
     //app.use( morgan()
@@ -65,7 +104,7 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
             
     // server static pages middleware
     app.use('/', express.static(__dirname + '/views/'));
-    
+    app.use('/profile', express.static(getDataDir()));
     app.post('/login', function(req, res) {
         
         var players = db.collection('players');
@@ -82,6 +121,8 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
         console.log(post);
         
         console.log(req.cookies);
+        
+        //var hash = crypto.createHash('md5').update(password).digest('hex');
 
         var query = {
             '_id' : email,
@@ -91,6 +132,9 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
         var fields = {
             'password' : 0  
         };
+        
+        console.log(query);
+        console.log(fields);
         
         players.findOne( query, fields, function (err, doc) {
             
@@ -109,16 +153,76 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
                 console.log('updated lastseen for ' + email);
             });
             
-            res.cookie('email', email, { maxAge: 900000, httpOnly: true });
-            res.cookie('lastseen', lastseen, { maxAge: 900000, httpOnly: true });
+            setSession(res, 'email', email);
+            setSession(res, 'lastseen', lastseen);
+            setSession(res, 'status', STATUS_OK);
             if (req.cookies) {
-                res.send(JSON.stringify(req.cookies));
+              console.log('Cookies!');
+              console.log(req.cookies);
+              console.log(res.cookie);
+              res.send( req.cookies );
             }
             else {
-                res.send( {'status' : 'ok'} );
+              console.log('No Cookies :(');
+              res.send( {'status' : STATUS_OK} );
             }
         });                
-    });    
+    });
+    
+    app.post('/logout', function (req, res) {
+        var players = db.collection('players');
+        
+        var client_ip = req.headers['x-forwarded-for'] || 
+                        req.connection.remoteAddress;
+    
+        var cookies = req.cookies;
+        
+        console.log('ip ' + client_ip);        
+        console.log(req.cookies);
+        
+        var email = cookies.email;
+        
+        //var hash = crypto.createHash('md5').update(password).digest('hex');
+
+        var query = {
+            '_id' : email,
+        };
+        
+        var fields = {};
+        
+        console.log(query);
+        console.log(fields);
+        
+        players.findOne( query, fields, function (err, doc) {
+            
+            if (err) return res.send({'status' : STATUS_ERR, 'errorno' : err})
+            
+            if (!doc) return res.send({'status' : STATUS_ERR, 'errorno' : 'Not Found'});
+            
+            var lastseen = new Date();
+            
+            players.update(
+                {'_id' : email}, 
+                { $set : { 'lastseen' : lastseen } }, 
+                function(err) {
+                if (err) return console.log('error setting lastseen');
+                
+                console.log('updated lastseen for ' + email);
+            });
+            
+            //res.cookie('email', email, { maxAge: 900000, httpOnly: true });
+            clearSession(res);
+            res.cookie('status', STATUS_OK, { maxAge: 900000, httpOnly: true });
+            if (req.cookies) {
+              console.log('Cookies!');
+              res.send(JSON.stringify(req.cookies));
+            }
+            else {
+              console.log('No Cookies :(');
+              res.send( {'status' : STATUS_OK} );
+            }
+        });
+    });
     
     
     app.post('/register', function (req, res) {
@@ -126,53 +230,189 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
         console.log(req.body);    
         console.log('Registering New User');
 
+        var session = getSession(req);
+        
+        var tprofile = "";
+
+        
         var post = req.body;
         var players = db.collection('players');
+        var locations = db.collection('locations');
         
         var email     = post['email'];        
+        var username = post['username'];
+        var password  = post['password'];
         var firstname = post['first'];
         var lastname  = post['last'];
-        var password  = post['password'];
-
+        var birthday = post['birthday'];
+        var weight = post ['weight'];
+        var height = post ['height'];
+        var country = post['country'];
+        var city = post['city'];
+        var now = new Date();
+        var location = { long: 0.01, latt: 0.01 };
+        
+        var hash = crypto.createHash('md5').update(password).digest('hex');
+        console.log("MD5 password: "+password+' hash: '+hash);
         
         var player = { 
             '_id' : email, 
+            'username' : username,
+            'password' : hash,
             'firstname' : firstname,
             'lastname' : lastname,
-            'password' : password,
-            'lastseen' : new Date()
+            'birthday' : birthday,
+            'weight' : weight,
+            'height' : height,
+            'country' : country,
+            'city' : city,
+            'lastseen' : now,
+            'location' : {
+                'type' : 'Point',
+                'coordinates' : [ 
+                    0.01, 
+                    0.02 
+                ]
+            }        
         };
-
+        
         players.insert( player, { w : 1 }, function(err, document) {
             if (err) {
-                res.send({'status' : 'error'});
-                console.log('error in registering: ' + err);   
+                console.log('error in registering profile: ' + err);   
+                res.send({'status' : STATUS_ERR});
             }
             
-            console.dir(document[0]);
-            res.send({'status' : 'ok'});
-        });        
+            if (!session) {
+                return console.log('Missing Session. Should be generated by upload');   
+            }
+            else {
+                var tmp_path = session.tpath;
+                var urlhash = murmurhash.v3(email);
+                var new_path = getDataDir() + urlhash + "/";
+                
+                console.log('%s %s %s', tmp_path, urlhash, new_path);
+                
+                if ( !fs.existsSync(new_path) ) {
+                    fs.mkdirSync(new_path);
+                }
+                
+                fs.rename(tmp_path, new_path + 'profile.jpg', function(err) {
+                   if (err) return console.log('Error finalizing profile image');
+                    console.log('DB Updating Profile Image ');
+                    players.update( 
+                        { '_id' : email },
+                        {
+                            $set : {
+                                'profile_url' : 'user/' + urlhash + '/profile.jpg'
+                            }
+                        }, 
+                        { upsert : true, w : 1, j : 1 }, 
+                        function(err, num) 
+                        {
+                            if (err) console.log('db error set profile' + err);
+                            
+                    });
+                });
+
+            }            
+                
         
+          console.dir(document[0]);
+          
+          setSession(res, 'email', email);
+          setSession(res, 'lastseen', now);
+          setSession(res, 'status', STATUS_OK);
+          
+          res.send({'email' : email, 'status' : STATUS_OK});
+        });
     });
     
+    app.post('/usersearch', function(req, res) {
+      console.log('ips: '+req.ips);
+      console.log(req.body);
+      console.log("Searching for Username");
+      
+      var post = req.body;
+      var players = db.collection('players');
+      var query = { 'username': post['username'] }
+      var fields = { 'username': 1 };
+      var player = players.findOne(
+        { 'username': post['username'] },
+        { 'username': 1 },
+        function (err, doc) {
+          if (err) return res.send({'status' : STATUS_ERR, 'errorno' : err})
+          if (doc) 
+          {
+            console.log('User found');
+            return res.send(JSON.stringify({status: STATUS_ERR}));
+          }
+          else
+          {
+            console.log('User not found');
+            res.send(JSON.stringify({status: STATUS_OK}));
+          }
+        }
+      );
+    });
+    
+    app.post('/locationupdate', function (req, res) {
+        console.log('ips: ');
+        console.log(req.body);
+        console.log("Updating Location");
+
+        var session = getSession(req);
+        var post = req.body;
+        var players = db.collection('players');
+
+        var lon = post['fLongitude'];
+        var lat = post['fLattitude'];
+
+        var query   = { '_id': session.email };
+        var options = { upsert : true, w : 1, j : 1 };
+        var update  = {  
+            $set: {
+                'location' : {
+                    'type' : 'Point',
+                    'coordinates' : [ 
+                        parseFloat(lon), 
+                        parseFloat(lat) 
+                    ]
+                }
+            }
+        };
+
+        players.update( query, update, options, function (err, num_records) {
+
+            if (err) return res.send({ 'status' : STATUS_ERR, 'errorno' : err}); 
+
+            res.send({ 'status' : STATUS_OK });
+        });
+    });
+    
+    app.get('/logout', function (req, res) {
+        
+        clearSession(res);
+        res.send('Cookies Cleared');
+    });
     
     var apiRouter = express.Router();
     app.use('/api', apiRouter);
-
     
     apiRouter.get('/profile/me',  function (req, res) {   
        
-        console.log(req.query);     
-        console.log('Update Profile');        
+        console.log(req.cookies);
+        console.log('Get My Profile');
         
-        var post = req.body;
+        var cookies = req.cookies;
         var players = db.collection('players');
         
-        var query  = { '_id' : username };
+        //console.log(post);
+        
+        var query  = { '_id' : cookies.email };
         var fields = { 'password' : 0 };
         
         players.findOne( query, fields, function (err, doc) {
-            res.send(JSON.stringify(docs));
+            if (doc) res.send(JSON.stringify(doc));
         });
     });
     
@@ -183,13 +423,12 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
         
         var session = getSession(req);
         
-        if (!session) return res.send({ status : 'error', 'errorno' : 'no session'});        
+        if (!session) return res.send({ status : STATUS_ERR, 'errorno' : 'no session'});        
         
         console.log(session);
         
         var post = req.body;
         
-        var dob     = post['dob'];
         var height  = post['height'];
         var weight  = post['weight'];
         var city    = post['city'];
@@ -197,34 +436,59 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
        
         var players = db.collection('players');
         
-        var query  = { '_id' : session.username };
+        var query  = { '_id' : session.email };
         var options = { w : 1, j : 1 };
         
-        var update = {
-            'dob' : dob,
+        var update = { $set : {
             'height' : height,
             'weight' : weight,
             'city' : city,
-            'country' : country         
+            'country' : country
+           }            
         };
 
         // Update profile      
         players.update( query, update, options, function (err, num_records) {
             
-            if (err) return res.send({ status : 'error', 'errorno' : err}); 
+            if (err) return res.send({ status : STATUS_ERR, 'errorno' : err}); 
             
-            res.send({ status : 'ok' });
+            res.send({ status : STATUS_OK });
         });
     });    
     
     
     apiRouter.get('/ping', function (req, res) {
+        console.log('Ping Query');
+        console.log(req.query);
+        console.log(req.cookies);
+        var get = req.query;
+        
+        var lon  = parseFloat(get['fLongitude']);
+        var lat  = parseFloat(get['fLattitude']);
+        var dist = parseInt(get['distance']);
+        dist *= 1000    // convert to metersmeter
         
         var players = db.collection("players");
         
-        var match = {};
+        var match = {      
+            'location' : {
+                $near : {
+                   $geometry : {
+                       'type' : 'Point',
+                       'coordinates' : [
+                            lon, //103.816933,
+                            lat, //1.450828
+                        ]
+                   },
+                   $maxDistance : dist //100000
+                }
+            }
+        };
+        
+        
         var fields = {};
         var options = { limit : 10 };
+        
         
         players.find( 
             match, 
@@ -232,7 +496,8 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
             options, 
             function (err, cursor) {
                 cursor.toArray (function(err, docs) {
-                    console.log('send drinks menu');
+                    console.log('Send ping matches');
+                    console.log(docs);
                     res.send(JSON.stringify(docs));
                 });
         });
@@ -243,22 +508,37 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
         console.log('recv uploaded file');
         console.log(req.body);
         
-        var form = new multiparty.Form();
+        var form = new multiparty.Form({
+            'autoFiles' : true,
+            'uploadDir' : getDataDir() 
+        });
 
-        var username = null;
-        var urlhash = null;
+        var session = getSession(req);
+        
+        var username = "";
         
         // Get current session username
-        if (req.cookies && req.cookies.email) {            
-            username = req.cookies.email;
-            urlhash = murmurhash.v3(username);
-            
-            // verify email from db
-            console.log('Existing Login: ' + req.cookies.email);   
+        if (!session) {
+            urlhash = murmurhash.v3(Timestamp());
+            console.log('Generating new user urlhash %s', urlhash);
+            //return res.send({ status : 'error', 'errorno' : 'no session' });
+        }
+        else if ( session.email ) {
+            key = session.email;
+            urlhash = murmurhash.v3(key);
+            console.log('Existing User Profile Pic Upload: ' + urlhash); 
+        }
+        else if ( session.tempKey ) {
+            urlhash = session.tempKey;
+            console.log('Temp Key User Profile Pic Upload: ' + urlhash);
+        }
+        else {
+            console.log('Error: No known means of identifying user');
+            res.send( { status: STATUS_ERR } );
         }
         
         form.parse(req, function(err, fields, files) {
-            
+            console.log(files);
             var profileImage = files.face_input[0];
       
             var size = profileImage.size;
@@ -269,9 +549,9 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
             console.log('tmp_path: ' + tmp_path);
             console.log('filename: ' + filename);
             
-            var new_path = __dirname + "/views/profile/" + urlhash + "/";
+            var new_path = getDataDir() + urlhash + "/";
             
-            var profile_url = '/profile/' + urlhash + '/' + filename;
+            var profile_url = '/user/' + urlhash + '/' + filename;
             
             if ( !fs.existsSync(new_path) ) {
                 fs.mkdirSync(new_path);
@@ -283,7 +563,9 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
                 
                 var data = {
                     'url' : profile_url,
+                    'tpath' : new_path + filename,
                     'size' : size,
+                    'tempKey' : urlhash,
                     status : 'ok'  
                 };
                 
@@ -292,7 +574,9 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
                 // TODO: Store profile url for user in DB
                 
                 
-                res.cookie('profile', data.url, { maxAge: 900000, httpOnly: true });
+                setSession(res, 'profile', data.url);
+                setSession(res, 'tpath', data.tpath);
+                setSession(res, 'tempKey', data.tempKey);
                 //res.redirect(data.url);
                 res.send(JSON.stringify(data));
             });
