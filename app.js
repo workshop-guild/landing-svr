@@ -156,17 +156,8 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
             setSession(res, 'email', email);
             setSession(res, 'lastseen', lastseen);
             setSession(res, 'status', STATUS_OK);
-            if (req.cookies) {
-              console.log('Cookies!');
-              console.log(req.cookies);
-              console.log(res.cookie);
-              res.send( req.cookies );
-            }
-            else {
-              console.log('No Cookies :(');
-              res.send( {'status' : STATUS_OK} );
-            }
-        });                
+            res.send( {'status' : STATUS_OK} );
+        });
     });
     
     app.post('/logout', function (req, res) {
@@ -256,7 +247,7 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
         console.log("MD5 password: "+password+' hash: '+hash);
         
         var player = { 
-            '_id' : email, 
+            '_id' : email,
             'username' : username,
             'password' : hash,
             'firstname' : firstname,
@@ -303,7 +294,8 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
                         { '_id' : email },
                         {
                             $set : {
-                                'profile_url' : 'user/' + urlhash + '/profile.jpg'
+                              'userID' : Math.floor(urlhash),
+                              'profile_url' : 'user/' + urlhash + '/profile.jpg'
                             }
                         }, 
                         { upsert : true, w : 1, j : 1 }, 
@@ -391,6 +383,7 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
     
     app.get('/logout', function (req, res) {
         
+        clearSession(req);
         clearSession(res);
         res.send('Cookies Cleared');
     });
@@ -399,61 +392,132 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
     app.use('/api', apiRouter);
     
     apiRouter.get('/profile/me',  function (req, res) {   
-       
-        console.log(req.cookies);
-        console.log('Get My Profile');
+      console.log('Get My Profile');
+      console.log(req.cookies);
         
-        var cookies = req.cookies;
-        var players = db.collection('players');
-        
-        //console.log(post);
-        
-        var query  = { '_id' : cookies.email };
-        var fields = { 'password' : 0 };
-        
-        players.findOne( query, fields, function (err, doc) {
-            if (doc) res.send(JSON.stringify(doc));
-        });
+      var cookies = getSession(req);
+      var players = db.collection('players');
+      
+      //console.log(post);
+      
+      var query  = { '_id' : cookies.email };
+      var fields = { 'password' : 0 };
+      
+      players.findOne( query, fields, function (err, doc) {
+          if (doc) res.send(JSON.stringify(doc));
+      });
     });
     
-    apiRouter.post('/profile/update',  function (req, res) {   
-       
-        console.log(req.query);     
-        console.log('Update Profile');        
+    apiRouter.get('/profile/view', function (req, res) {
+      console.log('Get Others Profile');
+      console.log(req.cookies);
+      
+      var cookies = getSession(req);
+      var players = db.collection('players');
+      
+      var query = { '_id' : cookies.email };
+      var fields = { 'password' : 0 };
+      
+      players.findOne( query, fields, function ( err, doc ) {
+        if (err) {
+          console.log('view profile ' + err);
+          res.send( { status: STATUS_ERR, errno: err } );
+        }
+        if (!doc) {
+          console.log('view profile cannot find user ' + cookies.email);
+          res.send( { status: STATUS_ERR, errno: 'Cannot find user '+cookies.email } );
+        }
         
-        var session = getSession(req);
+        console.log('found user doc');
+        console.log(doc);
         
-        if (!session) return res.send({ status : STATUS_ERR, 'errorno' : 'no session'});        
-        
-        console.log(session);
-        
-        var post = req.body;
-        
-        var height  = post['height'];
-        var weight  = post['weight'];
-        var city    = post['city'];
-        var country = post['country'];   
-       
-        var players = db.collection('players');
-        
-        var query  = { '_id' : session.email };
-        var options = { w : 1, j : 1 };
-        
-        var update = { $set : {
-            'height' : height,
-            'weight' : weight,
-            'city' : city,
-            'country' : country
-           }            
-        };
+        if ( doc.last_view !== null || typeof doc.last_view !== 'undefined' ) {
+          console.log('last_view = '+doc.last_view);
+          var newQuery = { 'userID' : parseInt(doc.last_view) };
+          var newFields = { '_id' : 0, 'password' : 0 };
+          var newPlayers = db.collection('player');
+          newPlayers.findOne( newQuery, newFields, function ( err, userDoc ) {
+            console.log('found last view user');
+            console.log(userDoc);
+            if (userDoc) res.send(JSON.stringify(userDoc));
+          } );
+        }
+      });
+    });
+    
+    apiRouter.post('/profile/setView', function (req, res) {
+      console.log('Update view profile history');
+      console.log(req.query);
+      
+      var cookies = getSession(req);
+      var post = req.body;
+      
+      var players = db.collection('players');
 
-        // Update profile      
-        players.update( query, update, options, function (err, num_records) {
+      var viewUserID = post.viewUserID;
+      var query = { '_id' : cookies.email };
+      
+      players.findOne( query, {}, function (err, doc) {
+        if (err)
+        {
+          console.log('view profile history ' + err);
+          res.send( { status: STATUS_ERR, errno: err } );
+        }
+        if (!doc) {
+          console.log('view profile history cannot find user ' + cookies.email);
+          res.send( { status: STATUS_ERR, errno: 'Cannot find user '+cookies.email } );
+        }
+        
+        players.update(
+          query,
+          { $set : { 'last_view' : viewUserID } },
+          { upsert : true, w : 1, j : 1 },
+          function(err, num) {
+            if (err) console.log('db error update view profile history ' + err);
             
-            if (err) return res.send({ status : STATUS_ERR, 'errorno' : err}); 
-            
-            res.send({ status : STATUS_OK });
-        });
+            res.send( { status: STATUS_OK } );
+          }
+        );
+      });
+    });
+    
+    apiRouter.post('/profile/update',  function (req, res) {    
+      console.log('Update Profile');
+      console.log(req.query);
+        
+      var session = getSession(req);
+      
+      if (!session) return res.send({ status : STATUS_ERR, 'errorno' : 'no session'});        
+      
+      console.log(session);
+      
+      var post = req.body;
+      
+      var height  = post['height'];
+      var weight  = post['weight'];
+      var city    = post['city'];
+      var country = post['country'];   
+     
+      var players = db.collection('players');
+      
+      var query  = { '_id' : session.email };
+      var options = { w : 1, j : 1 };
+      
+      var update = { $set : {
+          'height' : height,
+          'weight' : weight,
+          'city' : city,
+          'country' : country
+         }            
+      };
+
+      // Update profile      
+      players.update( query, update, options, function (err, num_records) {
+          
+          if (err) return res.send({ status : STATUS_ERR, 'errorno' : err}); 
+          
+          res.send({ status : STATUS_OK });
+      });
     });    
     
     
@@ -461,7 +525,10 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
         console.log('Ping Query');
         console.log(req.query);
         console.log(req.cookies);
+        
         var get = req.query;
+        var session = getSession(req);
+        
         
         var lon  = parseFloat(get['fLongitude']);
         var lat  = parseFloat(get['fLattitude']);
@@ -470,23 +537,49 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
         
         var players = db.collection("players");
         
-        var match = {      
+        var match = {
             'location' : {
-                $near : {
-                   $geometry : {
-                       'type' : 'Point',
-                       'coordinates' : [
-                            lon, //103.816933,
-                            lat, //1.450828
-                        ]
-                   },
-                   $maxDistance : dist //100000
-                }
-            }
+              $near : {
+                $geometry : {
+                  'type' : 'Point',
+                  'coordinates' : [
+                    lon, //103.816933,
+                    lat, //1.450828
+                  ]
+                },
+                $maxDistance : dist //100000
+              }
+            } 
         };
         
+        /*var match = {
+          $and : [
+            { '_id' : { $ne : session.email } },
+            { 
+              'location' : {
+                $near : {
+                  $geometry : {
+                    'type' : 'Point',
+                    'coordinates' : [
+                      lon, //103.816933,
+                      lat, //1.450828
+                    ]
+                  },
+                  $maxDistance : dist //100000
+                }
+              } 
+            },
+            
+          ]
+        };*/
         
-        var fields = {};
+        
+        var fields = {
+          '_id' : 0,
+          'userID' : 1,
+          'username' : 1,
+          'location' : 1,
+          'profile_url' : 1 };
         var options = { limit : 10 };
         
         
