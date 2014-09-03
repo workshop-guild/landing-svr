@@ -14,7 +14,7 @@ var fs = require('fs'),
 
 var app = express();
 
-var ipaddress = process.env.OPENSHIFT_NODEJS_IP || "127.0.0.1";
+var ipaddress = process.env.OPENSHIFT_NODEJS_IP || SERVER_ENV.web_address;
 var port = process.env.OPENSHIFT_NODEJS_PORT || SERVER_ENV.web_port;
 var data_dir = process.env.OPENSHIFT_DATA_DIR || __dirname + '/views/user';
 
