@@ -398,14 +398,20 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
       var cookies = getSession(req);
       var players = db.collection('players');
       
-      //console.log(post);
-      
-      var query  = { '_id' : cookies.email };
-      var fields = { 'password' : 0 };
-      
-      players.findOne( query, fields, function (err, doc) {
-          if (doc) res.send(JSON.stringify(doc));
-      });
+        
+      if (cookies) {
+          //console.log(post);
+
+          var query  = { '_id' : cookies.email };
+          var fields = { 'password' : 0 };
+
+          players.findOne( query, fields, function (err, doc) {
+              if (doc) res.send(JSON.stringify(doc));
+          });
+      } 
+      else {
+        res.send({ 'status' : STATUS_ERR }); 
+      }
     });
     
     apiRouter.get('/profile/view', function (req, res) {
