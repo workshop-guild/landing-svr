@@ -1,7 +1,7 @@
 {
-  "name": "landing",
+  "name": "landing-svr",
   "version": "0.0.1",
-  "description": "landing",
+  "description": "landing-svr",
   "main": "app.js",
   "dependencies": {
     "async": "~0.9.0",
@@ -22,7 +22,7 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
-    "type": "git",
+    "type": "git"
   },
   "author": "Eric",
   "license": "GNU"
