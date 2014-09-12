@@ -143,7 +143,14 @@ mongodb.connect(SERVER_ENV.db_url, function(err, db) {
 
             if (err) return res.send({'status' : 'error', 'errorno' : err})
 
-            if (!doc) return res.send({'status' : 'error', 'errorno' : 'Not Found'});
+            if (!doc) {
+              return res.status(401).send({
+                error: {
+                  code: err,
+                  message: 'Invalid User Credentials'
+                }
+              }); // send HTTP Status 401 Unauthorized
+            }
 
             var lastseen = new Date();
 
